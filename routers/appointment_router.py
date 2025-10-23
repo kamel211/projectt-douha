@@ -1,187 +1,136 @@
 # -------------------------------
 # appointments_router.py
 # -------------------------------
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer
-from bson import ObjectId
-from bson.errors import InvalidId
+from sqlalchemy.orm import Session
 from datetime import datetime
-from core.auth_utils import get_user_id_from_token,get_doctor_id_from_token # دالة استخراج id من JWT
-from database import appointments_collection, doctors_collection, patients_collection
-
+from database import get_db
+from model.appointment_model import Appointment
+from model.patient_model import Users
+from model.images_model import Images
+from model.appointment_schema import AppointmentRequest
+from Controller.patient_controller import get_current_patient
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # -------------------------------
-# 1️⃣ قائمة الدكاترة
+# 0️⃣ رفع صورة
 # -------------------------------
-@router.get("/doctors")
-def list_doctors(token: str = Depends(oauth2_scheme)):
-    """جلب قائمة الدكاترة النشطين"""
-    doctors = []
-    for doc in doctors_collection.find({"is_active": True}):
-        doctors.append({
-            "id": str(doc["_id"]),
-            "full_name": f"{doc['first_name']} {doc['last_name']}",
-            "email": doc.get("email", ""),
-            "work_hours": doc.get("work_hours", "10:00-16:00"),
-            "days": doc.get("work_days", ["Sunday","Monday","Tuesday","Wednesday","Thursday"])
-        })
-    return doctors
+@router.post("/upload_file/")
+async def upload_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: Users = Depends(get_current_patient)
+):
+    # حفظ الصورة في قاعدة البيانات
+    new_image = Images(
+        user_id=user.id,
+        filename=file.filename,
+        path=f"uploads/{file.filename}"
+    )
+    db.add(new_image)
+    db.commit()
+    db.refresh(new_image)
+
+    return {"message": "File uploaded successfully", "image_id": new_image.id}
+
 
 # -------------------------------
-# 2️⃣ حجز موعد
+# 1️⃣ حجز موعد مع صورة
 # -------------------------------
 @router.post("/book")
-def create_appointment(
-    doctor_id: str,
-    date_time: datetime,
-    reason: str = "",
-    token: str = Depends(oauth2_scheme)
+def create_appointment_endpoint(
+    appointment: AppointmentRequest,
+    db: Session = Depends(get_db),
+    user: Users = Depends(get_current_patient)
 ):
-    """حجز موعد للمريض"""
-    user_id = get_user_id_from_token(token)
-
-    # التأكد من وجود المريض
-    patient = patients_collection.find_one({"_id": ObjectId(user_id)})
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    # التحقق من صحة doctor_id
-    try:
-        doc_obj_id = ObjectId(doctor_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid doctor_id")
-
-    doctor = doctors_collection.find_one({"_id": doc_obj_id})
+    # التحقق من وجود الدكتور
+    doctor = db.query(Users).filter(Users.id == appointment.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # منع حجز في الماضي
-    if date_time < datetime.now():
-        raise HTTPException(status_code=400, detail="Cannot book in the past")
+    # منع الحجز في الماضي
+    if appointment.date_time <= datetime.now():
+        raise HTTPException(status_code=400, detail="Cannot book an appointment in the past")
+
+    # التحقق من ساعات العمل 10:00 - 16:00
+    if appointment.date_time.time() < datetime.strptime("10:00", "%H:%M").time() or \
+       appointment.date_time.time() > datetime.strptime("16:00", "%H:%M").time():
+        raise HTTPException(status_code=400, detail="Appointment must be within working hours (10:00-16:00)")
+
+    # التحقق من أيام العمل Sunday-Thursday
+    if appointment.date_time.weekday() > 4:
+        raise HTTPException(status_code=400, detail="Appointments are only allowed from Sunday to Thursday")
+
+    # التحقق من دقائق الموعد
+    if appointment.date_time.minute not in (0, 30):
+        raise HTTPException(status_code=400, detail="Appointments must start at 00 or 30 minutes")
+
+    # التحقق من التعارض مع مواعيد أخرى
+    conflict = db.query(Appointment).filter(
+        Appointment.doctor_id == appointment.doctor_id,
+        Appointment.date_time == appointment.date_time,
+        Appointment.status != "Cancelled"
+    ).first()
+    if conflict:
+        raise HTTPException(status_code=400, detail="Doctor already has an appointment at this time")
 
     # إنشاء الموعد
-    appointment = {
-        "doctor_id": str(doc_obj_id),
-        "patient_id": str(patient["_id"]),
-        "patient_name": f"{patient['first_name']} {patient['last_name']}",
-        "date_time": date_time,
-        "reason": reason,
-        "status": "Scheduled"
-    }
+    new_app = Appointment(
+        user_id=user.id,
+        doctor_id=appointment.doctor_id,
+        date_time=appointment.date_time,
+        reason=appointment.reason,
+        status="Scheduled",
+        image_id=appointment.image_id  # ← ربط الصورة بالموعد
+    )
+    db.add(new_app)
+    db.commit()
+    db.refresh(new_app)
 
-    result = appointments_collection.insert_one(appointment)
-    return {"message": "Appointment booked successfully", "appointment_id": str(result.inserted_id)}
+    return {"message": "Appointment booked successfully", "appointment_id": new_app.id}
+
 
 # -------------------------------
-# 3️⃣ عرض مواعيد المريض
+# 2️⃣ عرض مواعيد المريض مع الصورة
 # -------------------------------
 @router.get("/my-appointments")
-def get_user_appointments(token: str = Depends(oauth2_scheme)):
-    """جلب جميع مواعيد المريض الحالي"""
-    user_id = get_user_id_from_token(token)
-    appointments = list(appointments_collection.find({"patient_id": user_id}))
+def get_user_appointments(db: Session = Depends(get_db), user: Users = Depends(get_current_patient)):
+    appointments = db.query(Appointment).filter(Appointment.user_id == user.id).all()
 
     result = []
-    for appt in appointments:
-        doctor_id = appt.get("doctor_id")
-        doctor_name = "غير معروف"
-        if doctor_id:
-            doctor = doctors_collection.find_one({"_id": ObjectId(doctor_id)})
-            if doctor:
-                doctor_name = f"{doctor['first_name']} {doctor['last_name']}"
-
+    for app in appointments:
+        doctor_name = app.doctor.name if app.doctor else "Unknown"
         result.append({
-            "appointment_id": str(appt["_id"]),
+            "appointment_id": app.id,
             "doctor_name": doctor_name,
-            "date_time": appt["date_time"].isoformat() if hasattr(appt["date_time"], "isoformat") else str(appt["date_time"]),
-            "status": appt.get("status", "Unknown"),
-            "reason": appt.get("reason", "-")
+            "date_time": app.date_time.strftime("%Y-%m-%d %H:%M"),
+            "status": app.status,
+            "reason": app.reason,
+            "image_url": app.image.path if app.image else None  # ← رابط الصورة
         })
-    return result
+    return {"appointments": result}
+
 
 # -------------------------------
-# 4️⃣ عرض مواعيد الدكتور الحالي
-# -------------------------------
-@router.get("/doctor-appointments")
-def get_doctor_appointments(token: str = Depends(oauth2_scheme)):
-    """جلب جميع المواعيد للطبيب المسجل دخول"""
-    doctor_id = get_user_id_from_token(token)  # id الدكتور من التوكن
-    appointments = list(appointments_collection.find({"doctor_id": doctor_id}))
-
-    result = []
-    for appt in appointments:
-        patient_id = appt.get("patient_id")
-        patient_name = "غير معروف"
-        if patient_id:
-            patient = patients_collection.find_one({"_id": ObjectId(patient_id)})
-            if patient:
-                patient_name = f"{patient['first_name']} {patient['last_name']}"
-
-        result.append({
-            "appointment_id": str(appt["_id"]),
-            "patient_name": patient_name,
-            "date_time": appt["date_time"].isoformat() if hasattr(appt["date_time"], "isoformat") else str(appt["date_time"]),
-            "status": appt.get("status", "Unknown"),
-            "reason": appt.get("reason", "-")
-        })
-    return result
-
-# -------------------------------
-# 5️⃣ إلغاء موعد
+# 3️⃣ إلغاء موعد
 # -------------------------------
 @router.delete("/cancel/{appointment_id}")
-def cancel_appointment(appointment_id: str, token: str = Depends(oauth2_scheme)):
-    """إلغاء موعد من قبل المريض"""
-    user_id = get_user_id_from_token(token)
-    try:
-        appt_obj_id = ObjectId(appointment_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid appointment_id")
-
-    appointment = appointments_collection.find_one({"_id": appt_obj_id, "patient_id": user_id})
+def cancel_appointment(appointment_id: int, db: Session = Depends(get_db), user: Users = Depends(get_current_patient)):
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id, Appointment.user_id == user.id).first()
     if not appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
 
-    appointments_collection.update_one({"_id": appt_obj_id}, {"$set": {"status": "Cancelled"}})
-    return {"message": "Appointment cancelled successfully"}
+    if appointment.status == "Cancelled":
+        raise HTTPException(status_code=400, detail="Appointment already cancelled")
 
+    if appointment.date_time < datetime.now():
+        raise HTTPException(status_code=400, detail="Cannot cancel a past appointment")
 
-@router.post("/approve-cancel/{appointment_id}")
-def approve_cancel_appointment(appointment_id: str, token: str = Depends(oauth2_scheme)):
-    """الدكتور يوافق على إلغاء موعد"""
-    doctor_id = get_doctor_id_from_token(token)
-    try:
-        appt_obj_id = ObjectId(appointment_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid appointment_id")
+    appointment.status = "Cancelled"
+    db.commit()
+    db.refresh(appointment)
 
-    # ------------------ هنا مؤقت للتأكد من البيانات ------------------
-    appointment = appointments_collection.find_one({"_id": appt_obj_id})
-    print(appointment)  # ستشوف كل بيانات الموعد في console
-    # ---------------------------------------------------------------
-
-    if not appointment or appointment.get("status") != "PendingCancellation":
-        raise HTTPException(status_code=404, detail="Appointment not found or not pending cancellation")
-
-    appointments_collection.delete_one({"_id": appt_obj_id})
-    return {"message": "تم إلغاء الموعد بنجاح"}
-
-@router.post("/request-cancel/{appointment_id}")
-def request_cancel_appointment(appointment_id: str, token: str = Depends(oauth2_scheme)):
-    """المريض يطلب إلغاء الموعد → يحتاج موافقة الدكتور"""
-    user_id = get_user_id_from_token(token)
-    try:
-        appt_obj_id = ObjectId(appointment_id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid appointment_id")
-
-    appointment = appointments_collection.find_one({"_id": appt_obj_id, "patient_id": user_id})
-    if not appointment:
-        raise HTTPException(status_code=404, detail="Appointment not found")
-
-    # نغير الحالة إلى PendingCancellation
-    appointments_collection.update_one({"_id": appt_obj_id}, {"$set": {"status": "PendingCancellation"}})
-    return {"message": "تم طلب إلغاء الموعد، بانتظار موافقة الدكتور"}
+    return {"message": "Appointment cancelled successfully", "appointment_id": appointment.id}

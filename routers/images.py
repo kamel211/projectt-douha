@@ -1,37 +1,33 @@
-from fastapi import APIRouter, UploadFile, File, Depends
+
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from Controller import images_controller, appointment_controller
+from Controller.patient_controller import get_current_patient
+from Controller.images_controller import upload_to_local, get_user_images
 
 router = APIRouter(prefix="/images", tags=["Images"])
 
-
-@router.post("/upload_to_appointment/{appointment_id}")
-async def upload_image_to_appointment(
-    appointment_id: int,
+# ---------------- رفع صورة واحدة ----------------
+@router.post("/upload/")
+async def upload_file(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user = Depends(get_current_patient),
+    appointment_id: int | None = None  # 👈 إضافة هذا السطر الجديد
 ):
-    # 1. تحقق من الصورة
-    images_controller.validate_image(file)
+    """
+    يرفع صورة جديدة للمستخدم الحالي، ويمكن ربطها مباشرة بموعد إن تم تمرير appointment_id
+    """
+    return upload_to_local(file, user.id, db, appointment_id)  # 👈 تمرير appointment_id إلى الدالة
 
-    # 2. حفظ الصورة
-    filename = await images_controller.save_image(file)
-    image_url = f"/uploads/{filename}"
 
-    # 3. جلب الحجز
-    appointment = appointment_controller.get_appointment(db, appointment_id)
-
-    # 4. تسجيل الصورة في جدول الصور
-    images_controller.register_image(db, appointment.user_id, filename)
-
-    # 5. ربط الصورة بالحجز
-    appointment_controller.attach_image_to_appointment(appointment, image_url)
-    db.commit()
-    db.refresh(appointment)
-
-    return {
-        "appointment_id": appointment.id,
-        "image_url": image_url,
-        "reason": appointment.reason
-    }
+# ---------------- استرجاع كل صور المستخدم ----------------
+@router.get("/me")
+def get_my_images(
+    db: Session = Depends(get_db),
+    user = Depends(get_current_patient)
+):
+    """
+    يعيد جميع الصور التي رفعها المستخدم الحالي
+    """
+    return get_user_images(db, user.id)
