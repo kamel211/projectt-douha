@@ -1,39 +1,37 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
 from sqlalchemy.orm import Session
 from database import get_db
-from Controller.patient_controller import get_current_patient
-from Controller.images_controller import upload_to_local, get_user_images
+from Controller import images_controller, appointment_controller
 
 router = APIRouter(prefix="/images", tags=["Images"])
 
-# ---------------- رفع ملف واحد ----------------
-@router.post("/upload_file/")
-async def upload_file(
+
+@router.post("/upload_to_appointment/{appointment_id}")
+async def upload_image_to_appointment(
+    appointment_id: int,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user = Depends(get_current_patient)
+    db: Session = Depends(get_db)
 ):
-    return upload_to_local(file, user.id, db)
+    # 1. تحقق من الصورة
+    images_controller.validate_image(file)
 
-# ---------------- رفع عدة ملفات ----------------
-@router.post("/upload_files/")
-async def upload_files(
-    files: list[UploadFile] = File(...),
-    db: Session = Depends(get_db),
-    user = Depends(get_current_patient)
-):
-    urls = []
-    for file in files:
-        try:
-            urls.append(upload_to_local(file, user.id, db))
-        except HTTPException as e:
-            urls.append({"filename": file.filename, "error": e.detail})
-    return {"files": urls}
+    # 2. حفظ الصورة
+    filename = await images_controller.save_image(file)
+    image_url = f"/uploads/{filename}"
 
-# ---------------- استرجاع كل صور المستخدم ----------------
-@router.get("/me")
-def get_my_images(
-    db: Session = Depends(get_db),
-    user = Depends(get_current_patient)
-):
-    return get_user_images(db, user.id)
+    # 3. جلب الحجز
+    appointment = appointment_controller.get_appointment(db, appointment_id)
+
+    # 4. تسجيل الصورة في جدول الصور
+    images_controller.register_image(db, appointment.user_id, filename)
+
+    # 5. ربط الصورة بالحجز
+    appointment_controller.attach_image_to_appointment(appointment, image_url)
+    db.commit()
+    db.refresh(appointment)
+
+    return {
+        "appointment_id": appointment.id,
+        "image_url": image_url,
+        "reason": appointment.reason
+    }

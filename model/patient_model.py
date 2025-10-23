@@ -3,7 +3,7 @@ from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
-from model.appointment_model import Appointment
+
 
 
 class Users(Base):
@@ -17,9 +17,10 @@ class Users(Base):
     last_name = Column(String(100), nullable=False)
     hashed_password = Column(String(255), nullable=False)
     
-    # الحقول الإضافية
-    role = Column(String(50), default="patient")  # دور المستخدم
-    phone_number = Column(String(20))  # رقم الهاتف
-    # جدول المواعيد
+    
+    role = Column(String(50), default="patient")
+    phone_number = Column(String(20))  
+    
     appointments = relationship("Appointment", back_populates="patient")
+    images = relationship("Images", back_populates="user")
     
