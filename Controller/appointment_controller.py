@@ -2,7 +2,7 @@ from fastapi import HTTPException, APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, time
 from jose import jwt
-
+from database import appointments_collection
 from model.appointment_model import Appointment
 from model.doctor_model import Doctors
 from model.patient_model import Users

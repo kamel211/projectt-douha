@@ -39,9 +39,6 @@
 
 
 
-# # pip install uvicorn
-
-
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
@@ -49,19 +46,14 @@ from pymongo.errors import ConnectionFailure
 MONGO_URL = "mongodb+srv://kamelbataineh:Kamel123@cluster0.cf0rmeu.mongodb.net/university_project?retryWrites=true&w=majority&appName=Cluster0"
 
 try:
-    # إنشاء الاتصال
     mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=10000)
-    
-    # اختبار الاتصال
     mongo_client.admin.command('ping')
-    
-    # اختيار قاعدة البيانات
     mongo_db = mongo_client["university_project"]
-    
-    # اختيار الـ Collections
+
     doctors_collection = mongo_db["doctors"]
     appointments_collection = mongo_db["appointments"]
     patients_collection = mongo_db["patients"]
+    images_collection = mongo_db["images"]
 
     print("✅ Connected to MongoDB successfully!")
 
@@ -69,3 +61,11 @@ except ConnectionFailure as e:
     print("❌ MongoDB connection failed:", e)
 except Exception as e:
     print("❌ MongoDB unknown error:", e)
+
+
+def get_db():
+    """ارجاع قاعدة البيانات لتستخدم في routers"""
+    try:
+        yield mongo_db
+    finally:
+        pass  # MongoDB لا يحتاج اغلاق الاتصال لكل استدعاء
