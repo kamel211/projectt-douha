@@ -19,4 +19,4 @@ class Appointment(Base):
 
     patient = relationship("Users", back_populates="appointments")
     doctor = relationship("Doctors", back_populates="appointments")
-    image = relationship("Images")
+    image = relationship("Images", back_populates="appointment")

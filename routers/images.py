@@ -1,4 +1,5 @@
 
+
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
@@ -13,12 +14,12 @@ async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user = Depends(get_current_patient),
-    appointment_id: int | None = None  # 👈 إضافة هذا السطر الجديد
+    appointment_id: int | None = None
 ):
     """
     يرفع صورة جديدة للمستخدم الحالي، ويمكن ربطها مباشرة بموعد إن تم تمرير appointment_id
     """
-    return upload_to_local(file, user.id, db, appointment_id)  # 👈 تمرير appointment_id إلى الدالة
+    return upload_to_local(file, user.id, db, appointment_id)
 
 
 # ---------------- استرجاع كل صور المستخدم ----------------

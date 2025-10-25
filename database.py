@@ -1,71 +1,47 @@
-# # from sqlalchemy import create_engine, text
-# # from sqlalchemy.orm import sessionmaker, declarative_base
-# from pymongo import MongoClient
-# from pymongo.errors import ConnectionFailure
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import psycopg2
 
-# # # =============== PostgreSQL Connection ===============
-# # SQLALCHEMY_DATABASE_URL = "postgresql+psycopg2://postgres:douha@localhost:5432/project"
+# ---------------- إعداد بيانات الاتصال ----------------
+DB_USER = "postgres"        
+DB_PASSWORD = "douha2004" 
+DB_PORT = "5432"            
+DB_NAME = "progect"        
+DB_HOST="localhost"
 
-# # try:
-# #     engine = create_engine(SQLALCHEMY_DATABASE_URL)
-# #     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-# #     Base = declarative_base()
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-# #     # اختبار الاتصال بـ PostgreSQL
-# #     with engine.connect() as conn:
-# #         conn.execute(text("SELECT 1"))
-# #     print(" Connected to PostgreSQL successfully!")
+# ---------------- إعداد SQLAlchemy ----------------
+engine = create_engine(DATABASE_URL, echo=True)  # echo=True لطباعة كل الاستعلامات
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# # except Exception as e:
-# #     print(" PostgreSQL connection failed:", e)
-
-
-# # =============== MongoDB Connection ===============
-# MONGO_URL = "mongodb+srv://kamelbataineh:Kamel123@cluster0.cf0rmeu.mongodb.net/university_project?retryWrites=true&w=majority&appName=Cluster0"
-
-# try:
-#     mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-#     mongo_client.server_info() 
-#     mongo_db = mongo_client["university_project"]
-#     print(" Connected to MongoDB successfully!")
-#     doctors_collection = mongo_db["doctors"]
-#     appointments_collection = mongo_db["appointments"]
-#     patients_collection = mongo_db["patients"]
-
-# except ConnectionFailure as e:
-#     print(" MongoDB connection failed:", e)
-# except Exception as e:
-#     print("MongoDB unknown error:", e)
-
-
-
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
-
-# ================= MongoDB Connection =================
-MONGO_URL = "mongodb+srv://kamelbataineh:Kamel123@cluster0.cf0rmeu.mongodb.net/university_project?retryWrites=true&w=majority&appName=Cluster0"
-
+# ---------------- اختبار psycopg2 ----------------
 try:
-    mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=10000)
-    mongo_client.admin.command('ping')
-    mongo_db = mongo_client["university_project"]
+    conn = psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT
+    )
+    print("✅ Connected with psycopg2!")
+    conn.close()
+except psycopg2.OperationalError as e:
+    print("❌ psycopg2 connection failed:", e)
 
-    doctors_collection = mongo_db["doctors"]
-    appointments_collection = mongo_db["appointments"]
-    patients_collection = mongo_db["patients"]
-    images_collection = mongo_db["images"]
-
-    print("✅ Connected to MongoDB successfully!")
-
-except ConnectionFailure as e:
-    print("❌ MongoDB connection failed:", e)
+# ---------------- اختبار SQLAlchemy ----------------
+try:
+    with engine.connect() as connection:
+        print("✅ Connected with SQLAlchemy!")
 except Exception as e:
-    print("❌ MongoDB unknown error:", e)
+    print("❌ SQLAlchemy connection failed:", e)
 
-
+# ---------------- دالة get_db لاستخدامها مع FastAPI ----------------
 def get_db():
-    """ارجاع قاعدة البيانات لتستخدم في routers"""
+    db = SessionLocal()
     try:
-        yield mongo_db
+        yield db
     finally:
-        pass  # MongoDB لا يحتاج اغلاق الاتصال لكل استدعاء
+        db.close()

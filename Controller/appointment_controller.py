@@ -2,16 +2,16 @@ from fastapi import HTTPException, APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, time
 from jose import jwt
-from database import appointments_collection
+from database import get_db
 from model.appointment_model import Appointment
 from model.doctor_model import Doctors
 from model.patient_model import Users
-from model.appointment_schema import AppointmentRequest
-from database import get_db
+from Controller.images_controller import get_last_user_image  # ✅ استيراد
 from fastapi.security import OAuth2PasswordBearer
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 
 # ------------------------
 # 0️⃣ جلب كل الدكاترة
@@ -27,33 +27,28 @@ def get_all_doctors(db: Session):
         })
     return {"doctors": result}
 
+
 # ------------------------
-# 1️⃣ حجز موعد جديد
+# 1️⃣ حجز موعد جديد مع ربط آخر صورة
 # ------------------------
 def book_appointment(db: Session, user: Users, doctor_id: int, date_time: datetime, reason: str = None):
-    # التحقق من وجود الدكتور
     doctor = db.query(Doctors).filter(Doctors.id == doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # لا يمكن حجز موعد في الماضي
     now = datetime.now()
     if date_time <= now:
         raise HTTPException(status_code=400, detail="Cannot book an appointment in the past")
 
-    # التحقق من ساعات العمل 10:00 - 16:00
     if date_time.time() < time(10, 0) or date_time.time() > time(16, 0):
         raise HTTPException(status_code=400, detail="Appointment must be within working hours (10:00 - 16:00)")
 
-    # التحقق من أيام العمل Sunday-Thursday
-    if date_time.weekday() > 4:  # 0=Monday ... 6=Sunday
+    if date_time.weekday() > 4:
         raise HTTPException(status_code=400, detail="Appointments are only allowed from Sunday to Thursday")
 
-    # التحقق من دقائق الموعد (00 أو 30 فقط)
     if date_time.minute not in (0, 30):
         raise HTTPException(status_code=400, detail="Appointments must start at 00 or 30 minutes")
 
-    # التحقق من التعارض مع مواعيد أخرى
     conflict = db.query(Appointment).filter(
         Appointment.doctor_id == doctor_id,
         Appointment.date_time == date_time,
@@ -62,19 +57,24 @@ def book_appointment(db: Session, user: Users, doctor_id: int, date_time: dateti
     if conflict:
         raise HTTPException(status_code=400, detail="Doctor already has an appointment at this time")
 
-    # إنشاء الموعد
+    # ✅ جلب آخر صورة رفعها المريض وربطها بالحجز
+    last_image = get_last_user_image(db, user.id)
+    image_id = last_image.id if last_image else None
+
     new_app = Appointment(
         user_id=user.id,
         doctor_id=doctor_id,
         date_time=date_time,
         reason=reason,
-        status="Scheduled"
+        status="Scheduled",
+        image_id=image_id  # ✅ ربط الصورة
     )
     db.add(new_app)
     db.commit()
     db.refresh(new_app)
 
     return new_app
+
 
 # ------------------------
 # 2️⃣ إلغاء موعد
@@ -84,15 +84,12 @@ def cancel_appointment(db: Session, user: Users, appointment_id: int):
     if not appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
 
-    # التحقق من ملكية الموعد
     if appointment.user_id != user.id:
         raise HTTPException(status_code=403, detail="You are not allowed to cancel this appointment")
 
-    # التحقق من حالة الموعد
     if appointment.status == "Cancelled":
         raise HTTPException(status_code=400, detail="Appointment already cancelled")
 
-    # لا يمكن إلغاء موعد قديم
     if appointment.date_time < datetime.now():
         raise HTTPException(status_code=400, detail="Cannot cancel a past appointment")
 
@@ -102,8 +99,9 @@ def cancel_appointment(db: Session, user: Users, appointment_id: int):
 
     return {"message": "Appointment cancelled successfully", "appointment_id": appointment.id}
 
+
 # ------------------------
-# 3️⃣ عرض كل مواعيد المريض
+# 3️⃣ عرض كل مواعيد المريض مع رابط الصورة
 # ------------------------
 def get_user_appointments(db: Session, user: Users):
     appointments = db.query(Appointment).filter(Appointment.user_id == user.id).all()
@@ -115,22 +113,27 @@ def get_user_appointments(db: Session, user: Users):
         doctor = db.query(Doctors).filter(Doctors.id == app.doctor_id).first()
         doctor_name = doctor.name if doctor and doctor.name else "Unknown"
 
+        image_url = app.image.url if app.image else None  # ✅ رابط الصورة
+
         result.append({
             "appointment_id": app.id,
             "doctor_name": doctor_name,
             "date_time": app.date_time.strftime("%Y-%m-%d %H:%M") if app.date_time else "-",
             "status": app.status if app.status else "-",
-            "reason": app.reason if app.reason else "-"
+            "reason": app.reason if app.reason else "-",
+            "image_url": image_url
         })
 
     return {"appointments": result}
 
+
 # ------------------------
-# 4️⃣ دالة لاستخراج id الدكتور من التوكن
+# 4️⃣ استخراج id الدكتور من التوكن
 # ------------------------
 def get_doctor_id_from_token(token: str):
     payload = jwt.decode(token, "SECRET_KEY", algorithms=["HS256"])
-    return payload.get("sub")  # id الدكتور
+    return payload.get("sub")
+
 
 # ------------------------
 # 5️⃣ عرض مواعيد الدكتور الخاصة به
@@ -143,11 +146,13 @@ def get_doctor_appointments(token: str = Depends(oauth2_scheme), db: Session = D
     result = []
     for app in appointments:
         patient = db.query(Users).filter(Users.id == app.user_id).first()
+        image_url = app.image.url if app.image else None  # ✅ رابط الصورة للطبيب
         result.append({
             "appointment_id": app.id,
             "patient_name": patient.name if patient else "Unknown",
             "date_time": app.date_time.isoformat(),
             "status": app.status,
-            "reason": app.reason
+            "reason": app.reason,
+            "image_url": image_url
         })
     return {"appointments": result}
